@@ -114,6 +114,15 @@ class CertificationEntry(BaseModel):
         description="Organization issuing the certificate"
     )
 
+class ResponsibilityEntry(BaseModel):
+    """
+    Represents one responsibility extracted from the job description.
+    """
+
+    description: str = Field(
+        description="A single job responsibility or duty."
+    )
+
 
 # ============================================================================
 # Chain 1 : CV Extraction
@@ -220,6 +229,11 @@ class JDExtractionResult(BaseModel):
     requirements: List[RequirementEntry] = Field(
         default_factory=list,
         description="Skills and qualifications extracted from the JD"
+    )
+
+    responsibilities: List[ResponsibilityEntry] = Field(
+        default_factory=list,
+        description="Responsibilities extracted from the job description."
     )
 
 
