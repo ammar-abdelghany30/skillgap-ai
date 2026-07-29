@@ -22,8 +22,6 @@ RAG retrieval quality depends more on chunk boundaries than on embedding model c
 - **Job postings:** one CSV row = one chunk. A posting's title, skills, and requirements are only meaningful together — splitting a single posting into smaller pieces (e.g. by character count) would separate "5 years experience" from *what* it applies to, destroying the context needed for accurate skill-gap comparison.
 - **Roadmap topics:** one markdown file = one chunk. The roadmap.sh source repo already structures content as one file per topic node (e.g. `docker@<id>.md`), so each file is already a coherent, self-contained unit — re-splitting it would only fragment an already-correct boundary.
 
-**Why not `RecursiveCharacterTextSplitter` (the common default)?** Fixed-size chunking is the right tool when a source has no natural structure (e.g. a long-form article). Both data sources here already had natural document boundaries, so respecting those boundaries directly produced cleaner, more coherent chunks than arbitrary size-based splitting would have.
-
 ## Embedding model
 
 `sentence-transformers/all-MiniLM-L6-v2` (via Hugging Face, run locally through `langchain-huggingface`)
