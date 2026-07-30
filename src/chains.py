@@ -24,12 +24,7 @@ def build_cv_extraction_chain(llm=None):
     llm = llm or get_llm()
 
     base_parser = PydanticOutputParser(pydantic_object=CVExtractionResult)
-    # OutputFixingParser wraps the base parser: if the LLM's raw output
-    # fails to parse against the schema, it automatically sends the
-    # broken output + the parsing error back to the LLM once, asking it
-    # to fix the format. This is what "handle parse failures with
-    # OutputFixingParser" means in practice -- one extra LLM call only
-    # when needed, not on every request.
+
     fixing_parser = OutputFixingParser.from_llm(parser=base_parser, llm=llm)
 
     prompt = ChatPromptTemplate.from_template(
@@ -132,10 +127,7 @@ def build_full_pipeline(llm=None):
         jd_result=(lambda x: {"jd_text": x["jd_text"]}) | jd_chain,
     )
 
-    # Reshape the two extraction results into the input shape gap_chain
-    # expects, then feed into Chain 3. This whole thing -- extraction
-    # stage piped into a reshape step piped into gap_chain -- is ONE
-    # composed Runnable end to end.
+
     def reshape_for_gap_chain(extraction_results: dict) -> dict:
         return {
             "candidate_skills": extraction_results["cv_result"].model_dump_json(),
