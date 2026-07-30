@@ -9,8 +9,6 @@ Kept as two indexes (not one mixed index) so retrieval never accidentally
 returns a roadmap chunk when searching for market context, or vice versa.
 See chains.py for how each index gets queried.
 
-Run this once after prepare_data.py has produced the filtered job CSV
-and the roadmap folders have been copied into data/roadmaps/.
 """
 
 import os
