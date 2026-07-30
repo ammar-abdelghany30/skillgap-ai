@@ -27,10 +27,6 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.runnables import RunnableParallel, RunnableLambda
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-# NOTE: as of LangChain 1.x, OutputFixingParser was moved out of the main
-# `langchain` package into `langchain_classic`. If you're on an older
-# LangChain version (0.x), use `from langchain.output_parsers import
-# OutputFixingParser` instead.
 from langchain_classic.output_parsers import OutputFixingParser
 from langchain_mistralai import ChatMistralAI
 
@@ -38,13 +34,7 @@ from schemas import CVExtractionResult, JDExtractionResult, GapAnalysisResult, G
 
 
 def get_llm(temperature: float = 0):
-    # temperature=0 -- we want consistent, deterministic extraction,
-    # not creative variation, since this feeds structured parsing.
-    #
-    # mistral-small-latest -- runs on Mistral's free "Experiment" tier
-    # (rate-limited, no cost). Good enough for structured extraction
-    # tasks like this; reserve mistral-large-latest for anything needing
-    # deeper reasoning, if your rate limit allows it.
+
     return ChatMistralAI(model="mistral-small-latest", temperature=temperature)
 
 
@@ -160,9 +150,6 @@ def build_full_pipeline(llm=None):
     jd_chain = build_jd_extraction_chain(llm)
     gap_chain = build_gap_analysis_chain(llm)
 
-    # RunnableParallel runs Chain 1 and Chain 2 concurrently -- they're
-    # independent (CV extraction doesn't need the JD, and vice versa),
-    # so there's no reason to run them sequentially and waste time.
     extraction_stage = RunnableParallel(
         cv_result=(lambda x: {"cv_text": x["cv_text"]}) | cv_chain,
         jd_result=(lambda x: {"jd_text": x["jd_text"]}) | jd_chain,
@@ -174,12 +161,6 @@ def build_full_pipeline(llm=None):
             "job_requirements": extraction_results["jd_result"].model_dump_json(),
         }
 
-    # RunnableParallel here does two things with the SAME extraction_results
-    # input: (1) passes cv_result/jd_result straight through untouched via
-    # RunnablePassthrough, and (2) reshapes + feeds them into gap_chain.
-    # This is what lets the final output carry both the full extraction
-    # AND the gap analysis, instead of losing the full CV skill profile
-    # once gap_chain runs.
     full_pipeline = extraction_stage | RunnableParallel(
         cv_result=lambda x: x["cv_result"],
         jd_result=lambda x: x["jd_result"],

@@ -224,6 +224,10 @@ class JDExtractionResult(BaseModel):
             "Experienced Professional, Any."
         )
     )
+    applicant_preferences: List[str] = Field(
+        default_factory=list,
+        description="Non-skill hiring preferences such as gender or nationality."
+    )
 
     requirements: List[RequirementEntry] = Field(
         default_factory=list,
