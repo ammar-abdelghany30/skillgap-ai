@@ -288,7 +288,7 @@ SkillGap-AI
 │   ├── chains.py
 │   ├── schemas.py
 │   ├── ingestion.py
-│   ├── prepare_data.py
+│   ├── app.py
 │   └── test_retrieval.py
 │
 ├── data
