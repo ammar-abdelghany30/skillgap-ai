@@ -240,6 +240,20 @@ class JDExtractionResult(BaseModel):
 # ============================================================================
 # Chain 3 / 4 / 5 : Career Gap Analysis
 # ============================================================================
+class GapAnalysisResult(BaseModel):
+
+    current_skills: List[str] = Field(
+        description="Skills the candidate has that also appear in the job requirements"
+    )
+    missing_skills: List[str] = Field(
+        description="Required or preferred skills from the JD that the candidate does not have"
+    )
+    match_percentage: float = Field(
+        description="Rough percentage of required skills the candidate covers (0-100)"
+    )
+    overall_feedback: str = Field(
+        description="1-2 sentence overall assessment of how well the candidate fits the role"
+    )
 
 class RoadmapStep(BaseModel):
     """
