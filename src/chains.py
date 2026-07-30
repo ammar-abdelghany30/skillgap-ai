@@ -135,12 +135,24 @@ def build_full_pipeline(llm=None):
     Wires all three chains into a single composed Runnable, rather than
     just calling three functions in sequence from app.py. This is the
     actual "chain architecture" deliverable: one Runnable that takes raw
-    CV + JD text and returns a GapAnalysisResult, with the intermediate
-    extraction steps run in parallel (they don't depend on each other)
-    before being fed into the comparison step.
+    CV + JD text and returns both the raw extraction results AND the gap
+    analysis, with the intermediate extraction steps run in parallel
+    (they don't depend on each other) before being fed into the
+    comparison step.
+
+    IMPORTANT: the full cv_result is preserved in the output (not just
+    gap_result.current_skills) because gap_result.current_skills is only
+    the INTERSECTION between the CV and this one specific JD -- e.g. for
+    a Cybersecurity JD, a candidate's Python/SQL/Docker skills won't show
+    up there at all if that JD never mentioned them, even though the
+    candidate genuinely has those skills. Chain 5 (suggested jobs) needs
+    the candidate's full skill profile, not this narrow overlap, or its
+    suggestions end up biased toward whichever single skill happened to
+    match this particular JD.
 
     Input:  {"cv_text": "...", "jd_text": "..."}
-    Output: GapAnalysisResult
+    Output: {"cv_result": CVExtractionResult, "jd_result": JDExtractionResult,
+             "gap_result": GapAnalysisResult}
     """
     llm = llm or get_llm()
 
@@ -156,17 +168,23 @@ def build_full_pipeline(llm=None):
         jd_result=(lambda x: {"jd_text": x["jd_text"]}) | jd_chain,
     )
 
-    # Reshape the two extraction results into the input shape gap_chain
-    # expects, then feed into Chain 3. This whole thing -- extraction
-    # stage piped into a reshape step piped into gap_chain -- is ONE
-    # composed Runnable end to end.
     def reshape_for_gap_chain(extraction_results: dict) -> dict:
         return {
             "candidate_skills": extraction_results["cv_result"].model_dump_json(),
             "job_requirements": extraction_results["jd_result"].model_dump_json(),
         }
 
-    full_pipeline = extraction_stage | reshape_for_gap_chain | gap_chain
+    # RunnableParallel here does two things with the SAME extraction_results
+    # input: (1) passes cv_result/jd_result straight through untouched via
+    # RunnablePassthrough, and (2) reshapes + feeds them into gap_chain.
+    # This is what lets the final output carry both the full extraction
+    # AND the gap analysis, instead of losing the full CV skill profile
+    # once gap_chain runs.
+    full_pipeline = extraction_stage | RunnableParallel(
+        cv_result=lambda x: x["cv_result"],
+        jd_result=lambda x: x["jd_result"],
+        gap_result=reshape_for_gap_chain | gap_chain,
+    )
     return full_pipeline
 
 
@@ -282,6 +300,9 @@ def build_suggested_jobs_chain(job_index, llm=None, k: int = 6):
         skills_text = ", ".join(input_dict["current_skills"])
         docs = job_index.similarity_search(skills_text, k=k)
 
+        # Dedup by role -- the underlying dataset has many near-duplicate
+        # postings per role (see Day 1 retrieval test), so without this
+        # the LLM would just see the same role repeated several times.
         seen_roles = []
         context_lines = []
         for d in docs:
@@ -310,6 +331,16 @@ def build_suggested_jobs_chain(job_index, llm=None, k: int = 6):
 # End-to-end runner: ties all 5 chains together for a single CV + JD input
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Day 3 feature: source-grounded gap analysis
+# ---------------------------------------------------------------------------
+# Turns each bare "missing_skills" claim from Chain 3 into something backed
+# by real market data: how many similar real job postings actually mention
+# this skill, plus example job IDs to cite. Deliberately NOT another LLM
+# call -- it's deterministic counting over documents already retrieved from
+# job_postings_index, so it's fast, free, and directly demo-able ("look,
+# here's the actual evidence" rather than "the model said so").
+
 def ground_missing_skills(
     missing_skills: List[str],
     target_job_title: Optional[str],
@@ -319,6 +350,8 @@ def ground_missing_skills(
     if not target_job_title:
         target_job_title = "similar role"
 
+    # Retrieve postings similar to the target role -- this is the same
+    # job_postings_index validated on Day 1.
     similar_postings = job_index.similarity_search(target_job_title, k=k)
     total_checked = len(similar_postings)
 
@@ -354,10 +387,12 @@ def run_end_to_end(cv_text: str, jd_text: str, llm=None) -> dict:
     llm = llm or get_llm()
     job_index, roadmap_index = load_vectorstores()
 
-    gap_pipeline = build_full_pipeline(llm)
-    gap_result = gap_pipeline.invoke({"cv_text": cv_text, "jd_text": jd_text})
+    full_pipeline = build_full_pipeline(llm)
+    pipeline_output = full_pipeline.invoke({"cv_text": cv_text, "jd_text": jd_text})
+    cv_result = pipeline_output["cv_result"]
+    gap_result = pipeline_output["gap_result"]
 
-
+    # Day 3 feature: attach real market evidence to each missing skill
     grounded_missing_skills = ground_missing_skills(
         missing_skills=gap_result.missing_skills,
         target_job_title=gap_result.target_job_title,
@@ -367,8 +402,16 @@ def run_end_to_end(cv_text: str, jd_text: str, llm=None) -> dict:
     roadmap_chain = build_roadmap_chain(roadmap_index, llm)
     roadmap_result = roadmap_chain.invoke({"missing_skills": gap_result.missing_skills})
 
+    # Suggested jobs uses the candidate's FULL skill profile (from Chain 1
+    # CV extraction), not gap_result.current_skills -- current_skills is
+    # only the overlap with THIS ONE job description's requirements, which
+    # would badly under-represent the candidate for roles unrelated to the
+    # JD they happened to paste in (e.g. a Cybersecurity JD wouldn't
+    # surface a candidate's Python/SQL background at all).
+    all_candidate_skills = [s.name for s in cv_result.skills]
+
     jobs_chain = build_suggested_jobs_chain(job_index, llm)
-    jobs_result = jobs_chain.invoke({"current_skills": gap_result.current_skills})
+    jobs_result = jobs_chain.invoke({"current_skills": all_candidate_skills})
 
     return {
         "current_skills": gap_result.current_skills,
@@ -380,6 +423,7 @@ def run_end_to_end(cv_text: str, jd_text: str, llm=None) -> dict:
         "suggested_jobs_reasoning": jobs_result.reasoning,
         "grounded_missing_skills": [g.model_dump() for g in grounded_missing_skills],
     }
+
 
 
 if __name__ == "__main__":
