@@ -52,8 +52,12 @@ def extract_text_from_pdf(uploaded_file) -> str:
 
 st.set_page_config(page_title="SkillGap-AI", layout="wide")
 st.title("SkillGap-AI")
-st.caption("RAG-powered career coach: upload your CV, paste a target job description, "
-           "get a grounded skill-gap analysis and learning roadmap.")
+st.markdown("""
+<p style="font-size:20px; color:#B0B0B0;">
+RAG-powered career coach: upload your CV, paste a target job description,
+get a grounded skill-gap analysis and learning roadmap.
+</p>
+""", unsafe_allow_html=True)
 
 if not os.getenv("MISTRAL_API_KEY"):
     st.error("MISTRAL_API_KEY not found. Add it to your .env file before running.")
@@ -97,7 +101,17 @@ if run_clicked:
         )
 
         gap_pipeline = build_full_pipeline(llm)
-        gap_result = gap_pipeline.invoke({"cv_text": cv_text, "jd_text": jd_text})
+
+        pipeline_output = gap_pipeline.invoke(
+            {
+                "cv_text": cv_text,
+                "jd_text": jd_text,
+            }
+        )
+
+        cv_result = pipeline_output["cv_result"]
+        jd_result = pipeline_output["jd_result"]
+        gap_result = pipeline_output["gap_result"]
 
         grounded = ground_missing_skills(
             missing_skills=gap_result.missing_skills,
@@ -108,8 +122,16 @@ if run_clicked:
         roadmap_result = build_roadmap_chain(roadmap_index, llm).invoke(
             {"missing_skills": gap_result.missing_skills}
         )
+
+        all_candidate_skills = [
+            skill.name
+            for skill in cv_result.skills
+        ]
+
         jobs_result = build_suggested_jobs_chain(job_index, llm).invoke(
-            {"current_skills": gap_result.current_skills}
+            {
+                "current_skills": all_candidate_skills
+            }
         )
 
     st.success("Analysis complete.")
