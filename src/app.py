@@ -113,11 +113,14 @@ if run_clicked:
         jd_result = pipeline_output["jd_result"]
         gap_result = pipeline_output["gap_result"]
 
-        grounded = ground_missing_skills(
-            missing_skills=gap_result.missing_skills,
-            target_job_title=gap_result.target_job_title or target_role,
-            job_index=job_index,
-        )
+        grounded = None
+
+        if target_role != "Other":
+            grounded = ground_missing_skills(
+                missing_skills=gap_result.missing_skills,
+                target_job_title=gap_result.target_job_title or target_role,
+                job_index=job_index,
+            )
 
         roadmap_result = build_roadmap_chain(roadmap_index, llm).invoke(
             {"missing_skills": gap_result.missing_skills}
@@ -157,18 +160,30 @@ if run_clicked:
             st.write(f"- {s}")
 
     # --- Grounded evidence (Day 3 feature -- the visible "proof") ---
-    st.subheader("Market Evidence for Missing Skills")
-    st.caption("How often each missing skill actually appears in similar real job postings "
-               "(retrieved from a 600-posting job market index), not just an LLM guess.")
-    for g in grounded:
-        pct = (g.supporting_postings_count / g.total_postings_checked * 100) \
-            if g.total_postings_checked else 0
-        st.write(
-            f"**{g.skill}** — appears in {g.supporting_postings_count}/"
-            f"{g.total_postings_checked} similar postings ({pct:.0f}%)"
+    if target_role != "Other":
+
+        st.subheader("Market Evidence for Missing Skills")
+        st.caption(
+            "How often each missing skill appears in similar real job postings."
         )
-        if g.example_job_ids:
-            st.caption(f"Example job IDs: {', '.join(g.example_job_ids)}")
+
+        for g in grounded:
+            pct = (
+                    g.supporting_postings_count
+                    / g.total_postings_checked
+                    * 100
+            ) if g.total_postings_checked else 0
+
+            st.write(
+                f"**{g.skill}** — appears in "
+                f"{g.supporting_postings_count}/"
+                f"{g.total_postings_checked} postings ({pct:.0f}%)"
+            )
+
+            if g.example_job_ids:
+                st.caption(
+                    f"Example job IDs: {', '.join(g.example_job_ids)}"
+                )
 
     # --- Roadmap ---
     st.subheader("Recommended Roadmap")
