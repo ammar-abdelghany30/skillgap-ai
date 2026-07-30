@@ -3,13 +3,19 @@ chains.py
 
 LCEL chains for the SkillGap-AI pipeline.
 
-Chain 1: CV extraction       -- CV text -> CVExtractionResult
-Chain 2: JD extraction       -- JD text -> JDExtractionResult
-Chain 3: Gap analysis        -- compares Chain 1 + Chain 2 output
+Chain 1: CV extraction       -- CV text -> CVExtractionResult              (no RAG)
+Chain 2: JD extraction       -- JD text -> JDExtractionResult              (no RAG)
+Chain 3: Gap analysis        -- compares Chain 1 + Chain 2 output          (no RAG)
 Chain 4: Roadmap generation  -- missing skills -> RoadmapResult            (RAG: roadmap_index)
 Chain 5: Suggested jobs      -- current skills -> SuggestedJobsResult      (RAG: job_postings_index)
 
-
+Chains 1-3 follow prompt | llm | parser, wrapped with OutputFixingParser so
+a malformed LLM response gets one automatic retry instead of crashing the
+pipeline. Chains 4-5 add a retrieval step (RunnableLambda that queries a
+FAISS index) before the prompt, so the LLM's output is grounded in real
+retrieved content rather than generated from memory alone -- this is
+where RAG actually enters the pipeline (see the earlier discussion: Chains
+1-3 do NOT use retrieval, only comparison of already-provided text).
 """
 
 from pathlib import Path
@@ -21,14 +27,24 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.runnables import RunnableParallel, RunnableLambda
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
+# NOTE: as of LangChain 1.x, OutputFixingParser was moved out of the main
+# `langchain` package into `langchain_classic`. If you're on an older
+# LangChain version (0.x), use `from langchain.output_parsers import
+# OutputFixingParser` instead.
 from langchain_classic.output_parsers import OutputFixingParser
 from langchain_mistralai import ChatMistralAI
 
-from schemas import CVExtractionResult, JDExtractionResult, GapAnalysisResult
+from schemas import CVExtractionResult, JDExtractionResult, GapAnalysisResult, GroundedMissingSkill
 
 
 def get_llm(temperature: float = 0):
     # temperature=0 -- we want consistent, deterministic extraction,
+    # not creative variation, since this feeds structured parsing.
+    #
+    # mistral-small-latest -- runs on Mistral's free "Experiment" tier
+    # (rate-limited, no cost). Good enough for structured extraction
+    # tasks like this; reserve mistral-large-latest for anything needing
+    # deeper reasoning, if your rate limit allows it.
     return ChatMistralAI(model="mistral-small-latest", temperature=temperature)
 
 
@@ -40,7 +56,12 @@ def build_cv_extraction_chain(llm=None):
     llm = llm or get_llm()
 
     base_parser = PydanticOutputParser(pydantic_object=CVExtractionResult)
-
+    # OutputFixingParser wraps the base parser: if the LLM's raw output
+    # fails to parse against the schema, it automatically sends the
+    # broken output + the parsing error back to the LLM once, asking it
+    # to fix the format. This is what "handle parse failures with
+    # OutputFixingParser" means in practice -- one extra LLM call only
+    # when needed, not on every request.
     fixing_parser = OutputFixingParser.from_llm(parser=base_parser, llm=llm)
 
     prompt = ChatPromptTemplate.from_template(
@@ -80,6 +101,9 @@ def build_jd_extraction_chain(llm=None):
 # ---------------------------------------------------------------------------
 # Chain 3: Gap analysis
 # ---------------------------------------------------------------------------
+# GapAnalysisResult now lives in schemas.py alongside the other schemas --
+# imported below.
+
 
 def build_gap_analysis_chain(llm=None):
     llm = llm or get_llm()
@@ -94,7 +118,8 @@ def build_gap_analysis_chain(llm=None):
         "Job requirements (JSON):\n{job_requirements}\n\n"
         "Match skills by meaning, not just exact string match (e.g. 'JS' and "
         "'JavaScript' are the same skill). Mandatory requirements matter more "
-        "than preferred ones for the match percentage.\n\n"
+        "than preferred ones for the match percentage. Set target_job_title to "
+        "the job_title value found in the job requirements JSON above.\n\n"
         "{format_instructions}"
     ).partial(format_instructions=base_parser.get_format_instructions())
 
@@ -257,9 +282,6 @@ def build_suggested_jobs_chain(job_index, llm=None, k: int = 6):
         skills_text = ", ".join(input_dict["current_skills"])
         docs = job_index.similarity_search(skills_text, k=k)
 
-        # Dedup by role -- the underlying dataset has many near-duplicate
-        # postings per role (see Day 1 retrieval test), so without this
-        # the LLM would just see the same role repeated several times.
         seen_roles = []
         context_lines = []
         for d in docs:
@@ -288,16 +310,59 @@ def build_suggested_jobs_chain(job_index, llm=None, k: int = 6):
 # End-to-end runner: ties all 5 chains together for a single CV + JD input
 # ---------------------------------------------------------------------------
 
+def ground_missing_skills(
+    missing_skills: List[str],
+    target_job_title: Optional[str],
+    job_index,
+    k: int = 15,
+) -> List[GroundedMissingSkill]:
+    if not target_job_title:
+        target_job_title = "similar role"
+
+    similar_postings = job_index.similarity_search(target_job_title, k=k)
+    total_checked = len(similar_postings)
+
+    grounded = []
+    for skill in missing_skills:
+        skill_lower = skill.lower()
+        supporting = [
+            doc for doc in similar_postings
+            if skill_lower in doc.page_content.lower()
+        ]
+        grounded.append(
+            GroundedMissingSkill(
+                skill=skill,
+                supporting_postings_count=len(supporting),
+                total_postings_checked=total_checked,
+                example_job_ids=[
+                    doc.metadata.get("job_id", "unknown")
+                    for doc in supporting[:3]
+                ],
+            )
+        )
+    return grounded
+
+
 def run_end_to_end(cv_text: str, jd_text: str, llm=None) -> dict:
     """
     Runs the complete pipeline: Chains 1-3 (extraction + gap analysis,
-    no RAG) followed by Chains 4-5 (roadmap + suggested jobs, RAG-grounded).
+    no RAG) -> source grounding (Day 3 feature, deterministic, no LLM
+    call) -> Chains 4-5 (roadmap + suggested jobs, RAG-grounded).
+    Returns a plain dict combining all results -- this is what app.py
+    will eventually render.
     """
     llm = llm or get_llm()
     job_index, roadmap_index = load_vectorstores()
 
     gap_pipeline = build_full_pipeline(llm)
     gap_result = gap_pipeline.invoke({"cv_text": cv_text, "jd_text": jd_text})
+
+
+    grounded_missing_skills = ground_missing_skills(
+        missing_skills=gap_result.missing_skills,
+        target_job_title=gap_result.target_job_title,
+        job_index=job_index,
+    )
 
     roadmap_chain = build_roadmap_chain(roadmap_index, llm)
     roadmap_result = roadmap_chain.invoke({"missing_skills": gap_result.missing_skills})
@@ -313,13 +378,15 @@ def run_end_to_end(cv_text: str, jd_text: str, llm=None) -> dict:
         "recommended_roadmap": [step.model_dump() for step in roadmap_result.steps],
         "suggested_jobs": jobs_result.suggested_jobs,
         "suggested_jobs_reasoning": jobs_result.reasoning,
+        "grounded_missing_skills": [g.model_dump() for g in grounded_missing_skills],
     }
 
 
-
-    # Quick manual smoke test
-
+if __name__ == "__main__":
+    # Quick manual smoke test -- requires MISTRAL_API_KEY to be set
+    # (get a free key at console.mistral.ai)
     import os
+    import json
     from dotenv import load_dotenv
 
     load_dotenv()
@@ -344,7 +411,6 @@ def run_end_to_end(cv_text: str, jd_text: str, llm=None) -> dict:
     pipelines is a plus. 0-2 years of experience welcome.
     """
 
-    print("Running full pipeline (Chain 1 + Chain 2 in parallel -> Chain 3)...\n")
-    pipeline = build_full_pipeline()
-    result = pipeline.invoke({"cv_text": sample_cv, "jd_text": sample_jd})
-    print(result.model_dump_json(indent=2))
+    print("Running full end-to-end pipeline (all 5 chains + grounding)...\n")
+    result = run_end_to_end(sample_cv, sample_jd)
+    print(json.dumps(result, indent=2))
