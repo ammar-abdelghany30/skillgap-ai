@@ -1,61 +1,303 @@
 # SkillGap-AI
 
-RAG-powered career coach that analyzes CVs, identifies skill gaps against real job requirements, and generates personalized learning roadmaps.
+An AI-powered career coach that analyzes a candidate's CV against a target job description, identifies missing skills, validates them against the real job market using RAG, and generates a personalized learning roadmap.
 
-## Architecture
+Built with **LangChain**, **Mistral AI**, **FAISS**, **HuggingFace Embeddings**, **Pydantic**, and **Streamlit**.
 
-**Input:** User-pasted CV text + target job description text
-**Pipeline:** LangChain LCEL chains (extraction → gap analysis → roadmap generation), grounded by two separate FAISS retrieval indexes
-**Output:** Structured `CareerGapAnalysis` (current skills, missing skills, roadmap, suggested jobs) via Pydantic output parsing
+---
 
-## Data sources
+# Features
 
-| Source | Content | Rows/Chunks |
-|---|---|---|
-| Kaggle job descriptions dataset (filtered) | Real-world job postings across 4 target roles (Backend Developer, Frontend Developer, Data Analyst, Data Scientist) | 600 |
-| roadmap.sh content (via sparse git checkout) | Topic-level learning content across 10 career roadmaps | 1,171 |
+- 📄 Extract structured information from CVs
+- 💼 Extract skills and requirements from job descriptions
+- 📊 Compare candidate skills against job requirements
+- 🔍 Validate missing skills using real-world job postings (RAG)
+- 📚 Generate personalized learning roadmaps from roadmap.sh content
+- 💡 Suggest alternative career paths based on the candidate's current skills
+- 🖥️ Interactive Streamlit interface
 
-## Chunking strategy — and why
+---
 
-RAG retrieval quality depends more on chunk boundaries than on embedding model choice. The two data sources here already have natural semantic units, so **document-level chunking** was used instead of fixed-size character splitting:
+# Project Architecture
 
-- **Job postings:** one CSV row = one chunk. A posting's title, skills, and requirements are only meaningful together — splitting a single posting into smaller pieces (e.g. by character count) would separate "5 years experience" from *what* it applies to, destroying the context needed for accurate skill-gap comparison.
-- **Roadmap topics:** one markdown file = one chunk. The roadmap.sh source repo already structures content as one file per topic node (e.g. `docker@<id>.md`), so each file is already a coherent, self-contained unit — re-splitting it would only fragment an already-correct boundary.
+```text
+User uploads
 
-## Embedding model
+CV.pdf
+JD.pdf
+      │
+      ▼
+Extract PDF Text
+      │
+      ▼
+run_end_to_end()
+      │
+      ▼
+──────────────────────────────────────
+Chain 1
+Extract candidate information
+──────────────────────────────────────
+      │
+      ▼
+CVExtractionResult
+      │
+──────────────────────────────────────
+Chain 2
+Extract job requirements
+──────────────────────────────────────
+      │
+      ▼
+JDExtractionResult
+      │
+──────────────────────────────────────
+Chain 3
+Compare candidate vs job
+──────────────────────────────────────
+      │
+      ▼
+GapAnalysisResult
+      │
+      ├──────────────► Chain 4
+      │                  Retrieve roadmap documents
+      │                  from FAISS
+      │                  ↓
+      │                  Generate learning roadmap
+      │
+      └──────────────► Chain 5
+                         Retrieve similar jobs
+                         from FAISS
+                         ↓
+                         Suggest alternative roles
+      │
+      ▼
+Merge all outputs
+      │
+      ▼
+Return structured JSON
+      │
+      ▼
+Display in Streamlit
+```
 
-`sentence-transformers/all-MiniLM-L6-v2` (via Hugging Face, run locally through `langchain-huggingface`)
+---
 
-Chosen over a paid API-based embedding model (e.g. OpenAI embeddings) because:
-- Free and runs locally — no API cost or rate limits during heavy iteration while building
-- Fast enough for this dataset size (600 + 1,171 chunks embeds in seconds)
-- 384-dimension output is sufficient quality for this scale of retrieval; the paid LLM API budget is reserved for the reasoning chains (CV/JD extraction, gap analysis) where output quality matters most
+# Tech Stack
 
-## Vector store
+| Component | Technology |
+|-----------|------------|
+| LLM | Mistral Small |
+| Framework | LangChain LCEL |
+| Embeddings | sentence-transformers/all-MiniLM-L6-v2 |
+| Vector Database | FAISS |
+| Output Parsing | Pydantic |
+| UI | Streamlit |
+| PDF Parsing | PyPDF |
+| Environment | Python |
 
-FAISS, via `langchain_community.vectorstores.FAISS`, with **two separate indexes** rather than one combined index:
+---
 
-- `vectorstore/job_postings_index`
-- `vectorstore/roadmap_index`
+# RAG Knowledge Sources
 
-Kept separate because the two data types serve distinct purposes in the pipeline — job postings provide market-context grounding for the gap analysis, while roadmaps drive the learning-plan generation. A single mixed index risks a query for "learning resources" returning a job posting, or vice versa; separate indexes make retrieval purpose-specific by construction.
+The project builds **two independent FAISS indexes**.
 
-## Retrieval validation
+### Job Postings Index
 
-Chunking and embedding choices were validated with manual similarity-search sanity checks (see `test_retrieval.py`) before wiring retrieval into any LLM chain — confirming, for example, that querying "Docker containers" correctly surfaces Docker-specific roadmap content (including a semantically-related "Containers" topic chunk, not just exact keyword matches) rather than unrelated topics.
+- 600 real job postings
+- Filtered from a Kaggle dataset
+- Covers:
+  - Backend Developer
+  - Frontend Developer
+  - Data Analyst
+  - Data Scientist
 
-## Pipeline stages (chains.py)
+Used for:
 
-1. **CV extraction** (no retrieval) — structured skill/experience extraction from user-provided CV text
-2. **JD extraction** (no retrieval) — structured requirement extraction from user-provided job description text
-3. **Gap comparison** (retrieval-grounded) — compares extracted skills vs. requirements; missing skills are cross-checked against `job_postings_index` to distinguish company-specific quirks from genuine market-wide requirements
-4. **Roadmap generation** (retrieval-driven) — each missing skill is queried against `roadmap_index`; retrieved topic content grounds the generated learning plan
-5. **Suggested jobs** (retrieval-driven) — candidate's current skill profile is queried against `job_postings_index` to surface adjacent roles as alternatives
+- Market validation
+- Similar job retrieval
 
-## Setup
+---
+
+### Learning Roadmap Index
+
+- 1,171 markdown documents
+- Extracted from roadmap.sh
+
+Used for:
+
+- Learning roadmap generation
+- Skill recommendations
+
+---
+
+# Chunking Strategy
+
+Instead of splitting documents into fixed-size chunks, the project keeps each document as its natural semantic unit.
+
+### Job Postings
+
+- One CSV row = one chunk
+
+Each posting already contains:
+
+- title
+- skills
+- requirements
+- responsibilities
+
+Keeping them together preserves context.
+
+---
+
+### Roadmap Documents
+
+- One markdown file = one chunk
+
+Each roadmap.sh topic already represents one learning concept.
+
+No additional splitting was needed.
+
+---
+
+# Market Evidence for Missing Skills ⭐
+
+One of the project's unique features is **Market Evidence**.
+
+Instead of trusting the LLM alone, every missing skill is validated against **real job postings**.
+
+Example:
+
+```
+Missing Skill:
+Docker
+```
+
+The system searches similar job postings for the same target role.
+
+Result:
+
+```
+Docker appears in
+
+83 / 100 Backend Developer jobs
+```
+
+This allows the application to distinguish between:
+
+- skills required by almost every employer
+- skills mentioned by only one company
+
+As a result, the learning roadmap is grounded in actual market demand rather than only the language model's reasoning.
+
+---
+
+# Pipeline
+
+### Chain 1 — CV Extraction
+
+Input:
+
+- CV text
+
+Output:
+
+- structured candidate profile
+
+---
+
+### Chain 2 — Job Description Extraction
+
+Input:
+
+- Job Description
+
+Output:
+
+- structured requirements
+
+---
+
+### Chain 3 — Skill Gap Analysis
+
+Compares:
+
+- candidate skills
+- experience
+- education
+
+against
+
+- job requirements
+
+Produces:
+
+- current skills
+- missing skills
+- match percentage
+
+---
+
+### Chain 4 — Roadmap Generation (RAG)
+
+Each missing skill retrieves the most relevant roadmap documents before generating learning steps.
+
+---
+
+### Chain 5 — Suggested Jobs (RAG)
+
+Searches similar job postings based on the candidate's current skills and recommends adjacent career paths.
+
+---
+
+# Output
+
+The application returns a structured Pydantic model containing:
+
+- Match Percentage
+- Current Skills
+- Missing Skills
+- Market Evidence
+- Personalized Learning Roadmap
+- Suggested Jobs
+- Overall Career Feedback
+
+---
+
+# Setup
 
 ```bash
+git clone <repo>
+
 pip install -r requirements.txt
-python src/ingestion.py     # builds both FAISS indexes
-python src/test_retrieval.py    # sanity-checks retrieval quality
+
+python src/ingestion.py
+
+python src/test_retrieval.py
+
+streamlit run app.py
+```
+
+---
+
+# Project Structure
+
+```
+SkillGap-AI
+│
+├── app.py
+├── src
+│   ├── chains.py
+│   ├── schemas.py
+│   ├── ingestion.py
+│   ├── prepare_data.py
+│   └── test_retrieval.py
+│
+├── data
+│   ├── raw
+│   └── roadmaps
+│
+├── vectorstore
+│   ├── job_postings_index
+│   └── roadmap_index
+│
+└── requirements.txt
 ```
