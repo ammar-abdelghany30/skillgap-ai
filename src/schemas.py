@@ -114,15 +114,6 @@ class CertificationEntry(BaseModel):
         description="Organization issuing the certificate"
     )
 
-class ResponsibilityEntry(BaseModel):
-    """
-    Represents one responsibility extracted from the job description.
-    """
-
-    description: str = Field(
-        description="A single job responsibility or duty."
-    )
-
 
 # ============================================================================
 # Chain 1 : CV Extraction
@@ -216,44 +207,71 @@ class JDExtractionResult(BaseModel):
         description="Years of experience requested"
     )
 
-
-    target_candidate: Optional[str] = Field(
-        default=None,
-        description=(
-            "Who this job is intended for. "
-            "Examples: Student, Fresh Graduate, Entry-Level, "
-            "Experienced Professional, Any."
-        )
-    )
-
     requirements: List[RequirementEntry] = Field(
         default_factory=list,
         description="Skills and qualifications extracted from the JD"
-    )
-
-    responsibilities: List[ResponsibilityEntry] = Field(
-        default_factory=list,
-        description="Responsibilities extracted from the job description."
     )
 
 
 # ============================================================================
 # Chain 3 / 4 / 5 : Career Gap Analysis
 # ============================================================================
+
 class GapAnalysisResult(BaseModel):
+    """
+    Output of Chain 3 specifically. Deliberately narrower than the final
+    CareerGapAnalysis below -- this chain only handles the comparison
+    step. Roadmap generation and job suggestions (which need RAG
+    retrieval) are separate chains (4 and 5) layered on top afterward.
+    """
+
+    target_job_title: Optional[str] = Field(
+        default=None,
+        description="The job title being targeted, copied from the extracted "
+                    "job requirements. Used downstream to ground missing skills "
+                    "against real market data for this role."
+    )
 
     current_skills: List[str] = Field(
         description="Skills the candidate has that also appear in the job requirements"
     )
+
     missing_skills: List[str] = Field(
         description="Required or preferred skills from the JD that the candidate does not have"
     )
+
     match_percentage: float = Field(
         description="Rough percentage of required skills the candidate covers (0-100)"
     )
+
     overall_feedback: str = Field(
         description="1-2 sentence overall assessment of how well the candidate fits the role"
     )
+
+
+class GroundedMissingSkill(BaseModel):
+    """
+    Day 3 feature: attaches real market evidence to a missing skill,
+    instead of leaving it as a bare LLM claim. Built by counting how many
+    similar real job postings (retrieved from job_postings_index) mention
+    this skill -- deterministic Python, not another LLM call.
+    """
+
+    skill: str = Field(description="The missing skill")
+
+    supporting_postings_count: int = Field(
+        description="How many of the retrieved similar postings mention this skill"
+    )
+
+    total_postings_checked: int = Field(
+        description="Total number of similar postings retrieved and checked"
+    )
+
+    example_job_ids: List[str] = Field(
+        default_factory=list,
+        description="Job IDs of a few postings that mention this skill, for citation"
+    )
+
 
 class RoadmapStep(BaseModel):
     """
