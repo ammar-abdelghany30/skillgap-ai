@@ -20,7 +20,7 @@ where RAG actually enters the pipeline (see the earlier discussion: Chains
 
 from pathlib import Path
 from typing import List, Optional
-
+import transformers
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
