@@ -207,7 +207,7 @@ for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
 
-user_question = st.chat_input("Ask e.g. 'Suggest another tutorial for Docker?'")
+user_question = st.chat_input("Ask e.g. 'Suggest another tutorial for Docker'")
 
 if user_question:
     st.session_state.chat_history.append({"role": "user", "content": user_question})

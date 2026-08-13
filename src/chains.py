@@ -120,7 +120,14 @@ def build_gap_analysis_chain(llm=None):
         "When listing items in current_skills or missing_skills, copy the "
         "requirement name EXACTLY as it appears in the job_requirements JSON "
         "above (same wording, same casing) — do not paraphrase or rename it. "
-        "This ensures the skill names can be reliably matched downstream.\n\n"
+        "This ensures the skill names can be reliably matched downstream."
+        "When a requirement includes qualifier words (e.g. 'Strong', 'Solid', "
+        "'Hands-on', 'Experience with', 'Good understanding of'), ignore those "
+        "qualifiers when deciding if there's a match — match on the core skill "
+        "itself. For example, a candidate who lists 'Python' DOES satisfy a "
+        "requirement phrased as 'Strong Python programming skills'; add that "
+        "requirement to current_skills (using its exact JD wording) rather than "
+        "missing_skills.\n\n"
         "{format_instructions}"
     ).partial(format_instructions=base_parser.get_format_instructions())
 
