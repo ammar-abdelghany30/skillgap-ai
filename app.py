@@ -201,13 +201,13 @@ if run_clicked:
 
 
 st.divider()
-st.subheader("Ask about your CV")
+st.subheader("Career Coach Chat")
 
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
 
-user_question = st.chat_input("Ask e.g. 'should I add Kubernetes to my CV?'")
+user_question = st.chat_input("Ask e.g. 'Suggest another tutorial for Docker?'")
 
 if user_question:
     st.session_state.chat_history.append({"role": "user", "content": user_question})
