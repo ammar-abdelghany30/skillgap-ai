@@ -35,7 +35,7 @@ from schemas import CVExtractionResult, JDExtractionResult, GapAnalysisResult, G
 
 def get_llm(temperature: float = 0):
 
-    return ChatMistralAI(model="mistral-small-latest", temperature=temperature)
+    return ChatMistralAI(model="mistral-small-latest", temperature=temperature,max_tokens=8000)
 
 
 # ---------------------------------------------------------------------------
@@ -107,15 +107,74 @@ def build_gap_analysis_chain(llm=None):
         "Candidate skills (JSON):\n{candidate_skills}\n\n"
         "Job requirements (JSON):\n{job_requirements}\n\n"
         "Match skills by meaning, not just exact string match (e.g. 'JS' and "
-        "'JavaScript' are the same skill). Mandatory requirements matter more "
-        "than preferred ones for the match percentage. Set target_job_title to "
-        "the job_title value found in the job requirements JSON above.\n\n"
+        "'JavaScript' are the same skill). A single skill must never appear in "
+        "BOTH current_skills and missing_skills — if the candidate's general "
+        "skill (e.g. 'SQL') reasonably covers a more specific requirement (e.g. "
+        "'PostgreSQL'), count it as matched and do not also list the specific "
+        "version as missing. Mandatory requirements matter more "
+        "than preferred ones for the match percentage. current_skills must ONLY "
+        "include candidate skills that also appear (by meaning) in the job "
+        "requirements above — do not include other skills the candidate has, "
+        "even if generally useful. Set target_job_title to the job_title value "
+        "found in the job requirements JSON above."
+        "When listing items in current_skills or missing_skills, copy the "
+        "requirement name EXACTLY as it appears in the job_requirements JSON "
+        "above (same wording, same casing) — do not paraphrase or rename it. "
+        "This ensures the skill names can be reliably matched downstream.\n\n"
         "{format_instructions}"
     ).partial(format_instructions=base_parser.get_format_instructions())
 
     return prompt | llm | fixing_parser
 
+def compute_match_percentage(gap_result, jd_result, mandatory_weight: int = 2) -> float:
+    total_weight = sum(
+        mandatory_weight if r.is_mandatory else 1 for r in jd_result.requirements
+    )
+    if total_weight == 0:
+        return 0.0
 
+    missing_lower = {s.lower() for s in gap_result.missing_skills}
+    matched_weight = sum(
+        (mandatory_weight if r.is_mandatory else 1)
+        for r in jd_result.requirements
+        if r.name.lower() not in missing_lower
+    )
+    pct = round(matched_weight / total_weight * 100, 1)
+
+    # Safety net: if missing_skills is non-empty, the score can never be
+    # 100 -- if the string matching produced that contradiction, it means
+    # the matching failed, not that the candidate is a perfect fit.
+    if gap_result.missing_skills and pct >= 100:
+        pct = 99.0
+
+    return pct
+
+# ---------------------------------------------------------------------------
+# CV Advisor Chatbot (conversational, no structured output needed)
+# ---------------------------------------------------------------------------
+
+def build_cv_advisor_chain(llm=None):
+    """
+    Plain conversational chain -- no Pydantic parser, since chat responses
+    are free-form text, not structured data. Takes the candidate's actual
+    gap-analysis context (if available) so answers are grounded in their
+    real CV/JD instead of generic advice.
+    """
+    llm = llm or get_llm()
+
+    prompt = ChatPromptTemplate.from_template(
+        "You are a helpful CV/resume advisor.\n\n"
+        "Candidate's analysis context (if available):\n{context}\n\n"
+        "Conversation so far:\n{history}\n\n"
+        "Candidate's new question: {question}\n\n"
+        "Give concrete, specific advice in a few sentences. If they ask "
+        "whether to add a skill, base your answer on what's actually "
+        "missing or present in their analysis above, if available. If no "
+        "analysis context is available, give general but still concrete "
+        "advice."
+    )
+
+    return prompt | llm
 # ---------------------------------------------------------------------------
 # Full pipeline: Chain 1 -> Chain 2 -> Chain 3 wired as one LCEL Runnable
 # ---------------------------------------------------------------------------
@@ -230,7 +289,7 @@ def build_roadmap_chain(roadmap_index, llm=None, k: int = 2):
             docs = roadmap_index.similarity_search(skill, k=k)
             snippets = "\n".join(
                 f"  - [{d.metadata.get('roadmap')}/{d.metadata.get('topic')}] "
-                f"{d.page_content[:300]}"
+                f"{d.page_content}"
                 for d in docs
             )
             context_blocks.append(f"Missing skill: {skill}\nRetrieved content:\n{snippets}")
@@ -243,8 +302,11 @@ def build_roadmap_chain(roadmap_index, llm=None, k: int = 2):
         "The candidate is missing these skills: {missing_skills_text}\n\n"
         "Relevant learning content retrieved for each missing skill:\n"
         "{retrieved_context}\n\n"
-        "For each missing skill, write ONE concrete next learning action "
+        "For each missing skill, write ONE concrete next learning action." 
+        "You may briefly mention its prerequisites if relevant."
         "grounded in the retrieved content above (not generic advice). "
+        "If the retrieved content includes a real URL, you may reference it. "
+        "Never invent, guess, or construct a URL that doesn't appear in the retrieved content above "
         "Set grounded_in_source to the [roadmap/topic] tag the content came from.\n\n"
         "{format_instructions}"
     ).partial(format_instructions=base_parser.get_format_instructions())
@@ -308,19 +370,8 @@ def build_suggested_jobs_chain(job_index, llm=None, k: int = 6):
     return RunnableLambda(retrieve_similar_roles) | prompt | llm | fixing_parser
 
 
-# ---------------------------------------------------------------------------
-# End-to-end runner: ties all 5 chains together for a single CV + JD input
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Day 3 feature: source-grounded gap analysis
-# ---------------------------------------------------------------------------
 # Turns each bare "missing_skills" claim from Chain 3 into something backed
 # by real market data: how many similar real job postings actually mention
-# this skill, plus example job IDs to cite. Deliberately NOT another LLM
-# call -- it's deterministic counting over documents already retrieved from
-# job_postings_index, so it's fast, free, and directly demo-able ("look,
-# here's the actual evidence" rather than "the model said so").
 
 def ground_missing_skills(
     missing_skills: List[str],
@@ -421,19 +472,37 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     sample_cv = """
-    Ammar Abdelghany
-    Senior year Computer and Systems Engineering student, Ain Shams University.
-    Interned as an AI/LLM Engineering Trainee at Tips Hindawi and as a
-    Software Engineering Trainee at Fuzetek. Skilled in Python, SQL, Docker,
-    and has built a distributed marketplace project using MariaDB Spider
-    Engine sharding.
+          ABO Showgy
+        Computer Science Graduate
+        
+        Experience:
+        Software Engineering Intern — TechNova Solutions
+        - Built REST APIs using Python and Flask
+        - Worked with SQL databases (PostgreSQL) for backend data storage
+        - Used Docker to containerize and deploy internal tools
+        - Collaborated with team using Git for version control
+        
+        Skills: Python, SQL, Docker, Git, Flask, REST APIs
+        
+        Education: B.Sc. Computer Science, 2026
+
     """
 
     sample_jd = """
-    We are hiring a Junior Backend Engineer. Requirements: strong Python
-    skills, experience with SQL databases, familiarity with Docker and
-    containerized deployments. Experience with Kubernetes and CI/CD
-    pipelines is a plus. 0-2 years of experience welcome.
+            AI Engineer
+            
+            We're looking for an AI Engineer to help build our LLM-powered products.
+            
+            Requirements:
+            - Strong Python programming skills
+            - Experience building RAG (Retrieval-Augmented Generation) pipelines
+            - Hands-on experience with vector databases (FAISS, Pinecone, or similar)
+            - Solid understanding of prompt engineering techniques
+            - Experience with MLOps practices for deploying ML/LLM systems to production
+            
+            Nice to have:
+            - Experience with LLM fine-tuning
+            - Familiarity with AI agent frameworks
     """
 
     print("Running full end-to-end pipeline (all 5 chains + grounding)...\n")
