@@ -18,6 +18,8 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "last_analysis_context" not in st.session_state:
     st.session_state.last_analysis_context = None
+if "analysis_results" not in st.session_state:
+    st.session_state.analysis_results = None
 
 ROLES_WITH_GROUNDING = ["Backend Developer", "Frontend Developer", "Data Analyst", "Data Scientist"]
 TARGET_ROLES = ROLES_WITH_GROUNDING + ["DevOps Engineer", "AI Engineer", "Machine Learning Engineer", "Other"]
@@ -94,6 +96,7 @@ if run_clicked:
             ground_missing_skills,
             build_roadmap_chain,
             build_suggested_jobs_chain,
+            compute_match_percentage,
         )
 
         gap_pipeline = build_full_pipeline(llm)
@@ -109,19 +112,9 @@ if run_clicked:
         jd_result = pipeline_output["jd_result"]
         gap_result = pipeline_output["gap_result"]
 
-        from chains import compute_match_percentage
-
         gap_result.match_percentage = compute_match_percentage(gap_result, jd_result)
 
-        st.session_state.last_analysis_context = (
-            f"Target role: {gap_result.target_job_title}\n"
-            f"Current skills: {', '.join(gap_result.current_skills)}\n"
-            f"Missing skills: {', '.join(gap_result.missing_skills)}\n"
-            f"Match: {gap_result.match_percentage}%"
-        )
-
         grounded = None
-
         if target_role in ROLES_WITH_GROUNDING:
             grounded = ground_missing_skills(
                 missing_skills=gap_result.missing_skills,
@@ -141,6 +134,36 @@ if run_clicked:
             {"current_skills": all_candidate_skills}
         )
 
+    # --- Save everything needed for display into session_state so it ---
+    # --- survives reruns triggered by the chatbot below ---
+    st.session_state.analysis_results = {
+        "gap_result": gap_result,
+        "roadmap_result": roadmap_result,
+        "jobs_result": jobs_result,
+        "grounded": grounded,
+        "target_role": target_role,
+    }
+
+    st.session_state.last_analysis_context = (
+        f"Target role: {gap_result.target_job_title}\n"
+        f"Current skills: {', '.join(gap_result.current_skills)}\n"
+        f"Missing skills: {', '.join(gap_result.missing_skills)}\n"
+        f"Match: {gap_result.match_percentage}%"
+    )
+
+# ---------------------------------------------------------------------
+# Display section -- runs on EVERY rerun (not just when Analyze was
+# clicked), driven by whether saved results exist in session_state.
+# This is what keeps results visible while chatting below.
+# ---------------------------------------------------------------------
+if st.session_state.analysis_results:
+    results = st.session_state.analysis_results
+    gap_result = results["gap_result"]
+    roadmap_result = results["roadmap_result"]
+    jobs_result = results["jobs_result"]
+    grounded = results["grounded"]
+    target_role = results["target_role"]
+
     st.success("Analysis complete.")
 
     perfect_match = gap_result.match_percentage >= 100 or not gap_result.missing_skills
@@ -156,15 +179,20 @@ if run_clicked:
             st.write(gap_result.overall_feedback)
 
     st.subheader("Skills")
-    skill_col1, skill_col2 = st.columns(2)
-    with skill_col1:
+    if perfect_match:
         st.markdown("**Current Skills**")
         for s in gap_result.current_skills:
             st.write(f"- {s}")
-    with skill_col2:
-        st.markdown("**Missing Skills**")
-        for s in gap_result.missing_skills:
-            st.write(f"- {s}")
+    else:
+        skill_col1, skill_col2 = st.columns(2)
+        with skill_col1:
+            st.markdown("**Current Skills**")
+            for s in gap_result.current_skills:
+                st.write(f"- {s}")
+        with skill_col2:
+            st.markdown("**Missing Skills**")
+            for s in gap_result.missing_skills:
+                st.write(f"- {s}")
 
     if not perfect_match:
         if target_role in ROLES_WITH_GROUNDING:
@@ -207,7 +235,12 @@ for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
 
-user_question = st.chat_input("Ask e.g. 'Suggest another tutorial for Docker'")
+if st.session_state.analysis_results:
+    placeholder = "e.g. 'Suggest a project idea covering my missing skills'"
+else:
+    placeholder = "e.g. 'Tips to make my CV more ATS-friendly?'"
+
+user_question = st.chat_input(placeholder)
 
 if user_question:
     st.session_state.chat_history.append({"role": "user", "content": user_question})
