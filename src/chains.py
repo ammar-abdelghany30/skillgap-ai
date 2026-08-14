@@ -29,6 +29,10 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_classic.output_parsers import OutputFixingParser
 from langchain_mistralai import ChatMistralAI
+from pathlib import Path
+from typing import List, Optional
+import re
+import transformers
 
 from schemas import CVExtractionResult, JDExtractionResult, GapAnalysisResult, GroundedMissingSkill
 
@@ -379,6 +383,35 @@ def build_suggested_jobs_chain(job_index, llm=None, k: int = 6):
 
 # Turns each bare "missing_skills" claim from Chain 3 into something backed
 # by real market data: how many similar real job postings actually mention
+def _extract_search_keywords(skill_text: str) -> list[str]:
+    """
+    Pulls out the actual skill terms from a full JD-style requirement
+    sentence (e.g. "Solid understanding of data visualization (Tableau
+    or Power BI)" -> ["data", "visualization", "Tableau", "Power BI"]),
+    so grounding can match against real postings that just list bare
+    skill names, not full descriptive sentences.
+    """
+    stopwords = {
+        "a", "an", "the", "of", "with", "for", "in", "on", "and", "or",
+        "to", "understanding", "solid", "strong", "experience", "hands-on",
+        "familiarity", "knowledge", "practices", "skills", "good",
+    }
+
+    paren_groups = re.findall(r"\(([^)]+)\)", skill_text)
+    base_text = re.sub(r"\([^)]+\)", "", skill_text)
+
+    keywords = [
+        w for w in re.findall(r"[A-Za-z0-9\+\#\.]+", base_text)
+        if w.lower() not in stopwords and len(w) > 2
+    ]
+    for group in paren_groups:
+        for part in re.split(r"\bor\b|,", group):
+            part = part.strip()
+            if part:
+                keywords.append(part)
+
+    return keywords or [skill_text]
+
 
 def ground_missing_skills(
     missing_skills: List[str],
@@ -396,10 +429,10 @@ def ground_missing_skills(
 
     grounded = []
     for skill in missing_skills:
-        skill_lower = skill.lower()
+        keywords = _extract_search_keywords(skill)
         supporting = [
             doc for doc in similar_postings
-            if skill_lower in doc.page_content.lower()
+            if any(kw.lower() in doc.page_content.lower() for kw in keywords)
         ]
         grounded.append(
             GroundedMissingSkill(
