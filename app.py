@@ -75,6 +75,7 @@ with col2:
 run_clicked = st.button("Analyze", type="primary", disabled=not ((cv_file or cv_text_input) and jd_text))
 
 if run_clicked:
+    st.session_state.chat_history = []
     if cv_text_input.strip():
         cv_text = cv_text_input.strip()
     else:
@@ -229,7 +230,13 @@ if st.session_state.analysis_results:
 
 
 st.divider()
-st.subheader("Career Coach Chat")
+chat_header_col1, chat_header_col2 = st.columns([4, 1])
+with chat_header_col1:
+    st.subheader("Career Coach Chat")
+with chat_header_col2:
+    if st.button("Clear Chat"):
+        st.session_state.chat_history = []
+        st.rerun()
 
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
