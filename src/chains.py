@@ -384,7 +384,7 @@ def ground_missing_skills(
     missing_skills: List[str],
     target_job_title: Optional[str],
     job_index,
-    k: int = 15,
+    k: int = 100,
 ) -> List[GroundedMissingSkill]:
     if not target_job_title:
         target_job_title = "similar role"
